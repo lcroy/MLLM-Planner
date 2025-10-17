@@ -307,7 +307,8 @@ def step4_action_planning_with_coordinates(task_description, objects_list, scene
         object_coordinates (dict): Map of object names to (x, y, z) coordinates
         
     Returns:
-        str or None: Final action plan with actual coordinates or None if failed
+        list or None: Final action plan as list of dictionaries or None if failed
+            Format: [{"object": "name", "object_center_location": {"x": x, "y": y, "z": z}, "ActionName": "action"}, ...]
     """
     print(f"\n[INFO] Planning action sequence for task: {task_description}")
     
@@ -336,9 +337,6 @@ CRITICAL PLANNING RULES:
 3. Always check the VLM spatial analysis for blocking relationships.
 4. USE THE ACTUAL COORDINATES provided for each object in the action plan.
 
-COORDINATE FORMAT:
-Each object has real 3D coordinates. Use them in the format: (ObjectName, (x, y, z), ActionName)
-
 STEP-BY-STEP ANALYSIS REQUIRED:
 1. Understand the user's task and identify target objects
 2. Check VLM analysis: Is anything ON TOP OF or BLOCKING the target object?
@@ -348,13 +346,41 @@ STEP-BY-STEP ANALYSIS REQUIRED:
 
 IMPORTANT: Use the EXACT coordinates provided in the scene description for each object action.
 
-FINAL ACTION PLAN FORMAT (use this exact format with actual coordinates):
-plan: (ObjectName, (x, y, z), ActionName) -> (ObjectName, (x, y, z), ActionName) -> ...
+FINAL ACTION PLAN FORMAT (must be valid JSON list):
+plan = [
+    {{
+        "object": "object_name",
+        "object_center_location": {{"x": x_value, "y": y_value, "z": z_value}},
+        "ActionName": "ActionName"
+    }},
+    ...
+]
 
 Example with actual coordinates:
-plan: (Pen, (15, 20, 30), MovetoObject) -> (Pen, (15, 20, 30), PickupObject) -> (USB Drive, (25, 25, 15), MovetoObject) -> (Pen, (25, 25, 15), PutDownObject)
+plan = [
+    {{
+        "object": "Pen",
+        "object_center_location": {{"x": 15, "y": 20, "z": 30}},
+        "ActionName": "MovetoObject"
+    }},
+    {{
+        "object": "Pen",
+        "object_center_location": {{"x": 15, "y": 20, "z": 30}},
+        "ActionName": "PickupObject"
+    }},
+    {{
+        "object": "USB Drive",
+        "object_center_location": {{"x": 25, "y": 25, "z": 15}},
+        "ActionName": "MovetoObject"
+    }},
+    {{
+        "object": "Pen",
+        "object_center_location": {{"x": 25, "y": 25, "z": 15}},
+        "ActionName": "PutDownObject"
+    }}
+]
 
-Now generate the action plan for the given task:"""
+Now generate the action plan for the given task in the exact JSON format above:"""
 
     try:
         print("[INFO] Running STEP 2 action planning via online LLM... ")
@@ -382,7 +408,7 @@ Now generate the action plan for the given task:"""
 
 def extract_plan_from_response_with_coords(plan_response, task_description, objects_list, scene_description, object_coordinates):
     """
-    Extract action plan from LLM response, ensuring actual coordinates are used.
+    Extract action plan from LLM response in JSON list format.
     
     Args:
         plan_response (str): Raw LLM response
@@ -392,43 +418,75 @@ def extract_plan_from_response_with_coords(plan_response, task_description, obje
         object_coordinates (dict): Actual coordinates for each object
         
     Returns:
-        str: Formatted action plan with actual coordinates
+        list: Action plan as list of dictionaries with format:
+            [{"object": "name", "object_center_location": {"x": x, "y": y, "z": z}, "ActionName": "action"}, ...]
     """
     import re
     
-    # Method 1: Look for "plan:" pattern with coordinates
-    plan_matches = list(re.finditer(r'plan:\s*\(', plan_response, re.IGNORECASE))
-    if plan_matches:
-        last_plan_start = plan_matches[-1].start()
-        plan_section = plan_response[last_plan_start:]
-        
-        lines = plan_section.split('\n')
-        plan_line = lines[0].strip()
-        
-        # Check if plan continues on subsequent lines
-        for i in range(1, len(lines)):
-            line = lines[i].strip()
-            if line.startswith('->') or (line and '->' in line):
-                plan_line += ' ' + line
-            else:
-                break
-        
-        if plan_line and len(plan_line) > 10:
-            # Verify it has coordinates (not just (0.0, 0.0))
-            if re.search(r'\(\d+(?:\.\d+)?,\s*\d+(?:\.\d+)?,\s*\d+(?:\.\d+)?\)', plan_line):
-                print(f"[INFO] Extracted plan with coordinates from LLM response")
-                return plan_line
+    # Method 1: Try to extract JSON array directly
+    try:
+        # Look for "plan = [" pattern
+        plan_match = re.search(r'plan\s*=\s*\[', plan_response, re.IGNORECASE)
+        if plan_match:
+            start_idx = plan_match.end() - 1  # Include the '['
+            
+            # Find the matching closing bracket
+            bracket_count = 0
+            end_idx = start_idx
+            for i in range(start_idx, len(plan_response)):
+                if plan_response[i] == '[':
+                    bracket_count += 1
+                elif plan_response[i] == ']':
+                    bracket_count -= 1
+                    if bracket_count == 0:
+                        end_idx = i + 1
+                        break
+            
+            if end_idx > start_idx:
+                json_str = plan_response[start_idx:end_idx]
+                plan_list = json.loads(json_str)
+                
+                # Validate the structure
+                if isinstance(plan_list, list) and len(plan_list) > 0:
+                    # Verify each item has required fields
+                    valid = all(
+                        isinstance(item, dict) and 
+                        'object' in item and 
+                        'object_center_location' in item and 
+                        'ActionName' in item
+                        for item in plan_list
+                    )
+                    if valid:
+                        print(f"[INFO] Successfully extracted JSON plan with {len(plan_list)} actions")
+                        return plan_list
+    except json.JSONDecodeError as e:
+        print(f"[WARNING] Failed to parse JSON from response: {e}")
+    except Exception as e:
+        print(f"[WARNING] Error extracting JSON plan: {e}")
     
-    # Method 2: Look for action patterns with coordinates
-    action_pattern = r'\([A-Za-z\s]+,\s*\(\d+(?:\.\d+)?,\s*\d+(?:\.\d+)?,\s*\d+(?:\.\d+)?\),\s*[A-Za-z]+\)'
-    if re.search(action_pattern, plan_response):
-        actions = re.findall(action_pattern, plan_response)
-        if actions:
-            print(f"[INFO] Found {len(actions)} actions with coordinates")
-            return "plan: " + " -> ".join(actions)
+    # Method 2: Look for individual JSON objects in the response
+    try:
+        # Pattern to match individual action objects
+        json_objects = []
+        object_pattern = r'\{\s*"object":\s*"[^"]+"\s*,\s*"object_center_location":\s*\{[^}]+\}\s*,\s*"ActionName":\s*"[^"]+"\s*\}'
+        matches = re.findall(object_pattern, plan_response)
+        
+        if matches:
+            for match in matches:
+                try:
+                    obj = json.loads(match)
+                    json_objects.append(obj)
+                except:
+                    continue
+            
+            if json_objects:
+                print(f"[INFO] Extracted {len(json_objects)} action objects from response")
+                return json_objects
+    except Exception as e:
+        print(f"[WARNING] Failed to extract individual JSON objects: {e}")
     
-    # Method 3: Fallback - create plan with actual coordinates
-    print("[WARNING] LLM response doesn't include proper coordinates. Creating fallback plan with actual coordinates...")
+    # Method 3: Fallback - create plan with actual coordinates in JSON format
+    print("[WARNING] LLM response doesn't include proper JSON format. Creating fallback plan with actual coordinates...")
     
     # Identify target objects from task
     target_objects = []
@@ -441,7 +499,7 @@ def extract_plan_from_response_with_coords(plan_response, task_description, obje
     if not target_objects:
         target_objects = objects_list[:1]  # Use first object as fallback
     
-    # Create plan with actual coordinates
+    # Create plan with actual coordinates in JSON format
     plan_steps = []
     
     for target_obj in target_objects:
@@ -473,15 +531,35 @@ def extract_plan_from_response_with_coords(plan_response, task_description, obje
             for blocking_obj in blocking_objects:
                 block_coords = object_coordinates.get(blocking_obj, (0, 0, 0))
                 plan_steps.extend([
-                    f"({blocking_obj}, {block_coords}, MovetoObject)",
-                    f"({blocking_obj}, {block_coords}, PickupObject)",
-                    f"({blocking_obj}, {block_coords}, PutDownObject)"
+                    {
+                        "object": blocking_obj,
+                        "object_center_location": {"x": block_coords[0], "y": block_coords[1], "z": block_coords[2]},
+                        "ActionName": "MovetoObject"
+                    },
+                    {
+                        "object": blocking_obj,
+                        "object_center_location": {"x": block_coords[0], "y": block_coords[1], "z": block_coords[2]},
+                        "ActionName": "PickupObject"
+                    },
+                    {
+                        "object": blocking_obj,
+                        "object_center_location": {"x": block_coords[0], "y": block_coords[1], "z": block_coords[2]},
+                        "ActionName": "PutDownObject"
+                    }
                 ])
         
         # Then handle target object
         plan_steps.extend([
-            f"({target_obj}, {coords}, MovetoObject)",
-            f"({target_obj}, {coords}, PickupObject)"
+            {
+                "object": target_obj,
+                "object_center_location": {"x": coords[0], "y": coords[1], "z": coords[2]},
+                "ActionName": "MovetoObject"
+            },
+            {
+                "object": target_obj,
+                "object_center_location": {"x": coords[0], "y": coords[1], "z": coords[2]},
+                "ActionName": "PickupObject"
+            }
         ])
         
         # If task mentions "put on" another object, add that
@@ -490,18 +568,32 @@ def extract_plan_from_response_with_coords(plan_response, task_description, obje
                 if obj != target_obj and obj.lower() in task_lower and obj not in target_objects[:-1]:
                     dest_coords = object_coordinates.get(obj, (0, 0, 0))
                     plan_steps.extend([
-                        f"({obj}, {dest_coords}, MovetoObject)",
-                        f"({target_obj}, {dest_coords}, PutDownObject)"
+                        {
+                            "object": obj,
+                            "object_center_location": {"x": dest_coords[0], "y": dest_coords[1], "z": dest_coords[2]},
+                            "ActionName": "MovetoObject"
+                        },
+                        {
+                            "object": target_obj,
+                            "object_center_location": {"x": dest_coords[0], "y": dest_coords[1], "z": dest_coords[2]},
+                            "ActionName": "PutDownObject"
+                        }
                     ])
                     break
     
     if plan_steps:
-        final_plan = "plan: " + " -> ".join(plan_steps)
-        print(f"[INFO] Generated fallback plan with actual coordinates")
-        return final_plan
+        print(f"[INFO] Generated fallback plan with {len(plan_steps)} actions in JSON format")
+        return plan_steps
     
-    # Last resort
-    return f"plan: ({objects_list[0]}, {object_coordinates.get(objects_list[0], (0, 0, 0))}, MovetoObject)"
+    # Last resort - return minimal valid plan
+    coords = object_coordinates.get(objects_list[0], (0, 0, 0))
+    return [
+        {
+            "object": objects_list[0],
+            "object_center_location": {"x": coords[0], "y": coords[1], "z": coords[2]},
+            "ActionName": "MovetoObject"
+        }
+    ]
 
 # =============================================================================
 # MAIN PIPELINE FUNCTION
@@ -531,7 +623,8 @@ def robot_action_planner_with_objects(task_description, image_path, objects, out
             - image_path: The input image path
             - detected_objects: List of objects with coordinates
             - spatial_relationships: Spatial relationship description from VLM
-            - action_plan: Generated action plan with actual coordinates
+            - action_plan: Generated action plan as list of dicts with format:
+                [{"object": "name", "object_center_location": {"x": x, "y": y, "z": z}, "ActionName": "action"}, ...]
             - success: Boolean indicating if planning succeeded
             - terminal_output: Captured terminal output (if capture_output=True)
     
