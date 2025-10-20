@@ -32,12 +32,9 @@ SITE_NAME = "Robot Action Planner"  # Your site name
 
 # Available Robot Actions
 AVAILABLE_ACTIONS = {
-    "MovetoObject": "move to the specified object",
-    "PickupObject": "pick up the object", 
-    "PutDownObject": "put down the object at the current location",
-    "OpenGripper": "open the gripper",
-    "CloseGripper": "close the gripper",
-    "Home": "return the robot to its home position"
+    "robot_pickUp": "Robot moves to point, hovering directly above the object, then descends to pick it up using the vacuum gripper",
+    "robot_dropOff": "Robot moves to a predefined drop-off location and releases the object held by the vacuum gripper",
+    "Go_home": "Moves the robot to a predefined home position using joint motion"
 }
 
 # =============================================================================
@@ -324,25 +321,25 @@ SCENE ANALYSIS:
 {scene_description}
 
 ROBOT ACTIONS AVAILABLE:
-- MovetoObject: move to an object
-- PickupObject: pick up an object
-- PutDownObject: put down an object
-- OpenGripper: open gripper
-- CloseGripper: close gripper
-- Home: return to home position
+- robot_pickUp: Robot moves to point (hovering directly above the object), then descends to pick it up using the vacuum gripper. This is a single action that handles both moving and picking.
+- robot_dropOff: Robot moves to a predefined drop-off location and releases the object held by the vacuum gripper. Use this to drop off objects at designated locations.
+- Go_home: Moves the robot to a predefined home position using joint motion. Use this to return robot to starting position.
 
 CRITICAL PLANNING RULES:
-1. If you need to pick up an object that has other objects ON TOP OF it, you MUST first move those blocking objects away.
+1. If you need to pick up an object that has other objects ON TOP OF it, you MUST first pick up and drop off those blocking objects.
 2. You cannot pick up an object if another object is resting on it.
 3. Always check the VLM spatial analysis for blocking relationships.
 4. USE THE ACTUAL COORDINATES provided for each object in the action plan.
+5. robot_pickUp automatically handles moving to the object and picking it up - no separate move action needed.
+6. After picking up each object, use robot_dropOff to place it somewhere before picking up another object.
+7. Typically end with Go_home to return robot to starting position.
 
 STEP-BY-STEP ANALYSIS REQUIRED:
 1. Understand the user's task and identify target objects
-2. Check VLM analysis: Is anything ON TOP OF or BLOCKING the target object?
-3. If YES: Move blocking objects first (with their actual coordinates)
+2. Check VLM analysis: Is anything ON TOP OF or BLOCKING or OVERLAPPING the target object?
+3. If YES: Pick up blocking objects first and drop them off (using their actual coordinates)
 4. If NO: Pick up target directly (with its actual coordinates)
-5. For multi-step tasks (e.g., "pick up X and put it on Y"), plan the full sequence
+5. For multi-step tasks, plan the full sequence: pickUp → dropOff → pickUp → dropOff → Go_home
 
 IMPORTANT: Use the EXACT coordinates provided in the scene description for each object action.
 
@@ -356,27 +353,32 @@ plan = [
     ...
 ]
 
-Example with actual coordinates:
+Example with actual coordinates (picking up Pen that has USB Drive on top):
 plan = [
-    {{
-        "object": "Pen",
-        "object_center_location": {{"x": 15, "y": 20, "z": 30}},
-        "ActionName": "MovetoObject"
-    }},
-    {{
-        "object": "Pen",
-        "object_center_location": {{"x": 15, "y": 20, "z": 30}},
-        "ActionName": "PickupObject"
-    }},
     {{
         "object": "USB Drive",
         "object_center_location": {{"x": 25, "y": 25, "z": 15}},
-        "ActionName": "MovetoObject"
+        "ActionName": "robot_pickUp"
+    }},
+    {{
+        "object": "USB Drive",
+        "object_center_location": {{"x": 30, "y": 30, "z": 10}},
+        "ActionName": "robot_dropOff"
     }},
     {{
         "object": "Pen",
-        "object_center_location": {{"x": 25, "y": 25, "z": 15}},
-        "ActionName": "PutDownObject"
+        "object_center_location": {{"x": 15, "y": 20, "z": 30}},
+        "ActionName": "robot_pickUp"
+    }},
+    {{
+        "object": "Pen",
+        "object_center_location": {{"x": 35, "y": 35, "z": 10}},
+        "ActionName": "robot_dropOff"
+    }},
+    {{
+        "object": "none",
+        "object_center_location": {{"x": 0, "y": 0, "z": 0}},
+        "ActionName": "Go_home"
     }}
 ]
 
@@ -534,17 +536,12 @@ def extract_plan_from_response_with_coords(plan_response, task_description, obje
                     {
                         "object": blocking_obj,
                         "object_center_location": {"x": block_coords[0], "y": block_coords[1], "z": block_coords[2]},
-                        "ActionName": "MovetoObject"
+                        "ActionName": "robot_pickUp"
                     },
                     {
                         "object": blocking_obj,
                         "object_center_location": {"x": block_coords[0], "y": block_coords[1], "z": block_coords[2]},
-                        "ActionName": "PickupObject"
-                    },
-                    {
-                        "object": blocking_obj,
-                        "object_center_location": {"x": block_coords[0], "y": block_coords[1], "z": block_coords[2]},
-                        "ActionName": "PutDownObject"
+                        "ActionName": "robot_dropOff"
                     }
                 ])
         
@@ -553,30 +550,20 @@ def extract_plan_from_response_with_coords(plan_response, task_description, obje
             {
                 "object": target_obj,
                 "object_center_location": {"x": coords[0], "y": coords[1], "z": coords[2]},
-                "ActionName": "MovetoObject"
-            },
-            {
-                "object": target_obj,
-                "object_center_location": {"x": coords[0], "y": coords[1], "z": coords[2]},
-                "ActionName": "PickupObject"
+                "ActionName": "robot_pickUp"
             }
         ])
         
-        # If task mentions "put on" another object, add that
+        # If task mentions "put on" another object, add dropOff action
         if "put" in task_lower and "on" in task_lower:
             for obj in objects_list:
                 if obj != target_obj and obj.lower() in task_lower and obj not in target_objects[:-1]:
                     dest_coords = object_coordinates.get(obj, (0, 0, 0))
                     plan_steps.extend([
                         {
-                            "object": obj,
-                            "object_center_location": {"x": dest_coords[0], "y": dest_coords[1], "z": dest_coords[2]},
-                            "ActionName": "MovetoObject"
-                        },
-                        {
                             "object": target_obj,
                             "object_center_location": {"x": dest_coords[0], "y": dest_coords[1], "z": dest_coords[2]},
-                            "ActionName": "PutDownObject"
+                            "ActionName": "robot_dropOff"
                         }
                     ])
                     break
@@ -591,7 +578,17 @@ def extract_plan_from_response_with_coords(plan_response, task_description, obje
         {
             "object": objects_list[0],
             "object_center_location": {"x": coords[0], "y": coords[1], "z": coords[2]},
-            "ActionName": "MovetoObject"
+            "ActionName": "robot_pickUp"
+        },
+        {
+            "object": objects_list[0],
+            "object_center_location": {"x": coords[0], "y": coords[1], "z": coords[2]},
+            "ActionName": "robot_dropOff"
+        },
+        {
+            "object": "none",
+            "object_center_location": {"x": 0, "y": 0, "z": 0},
+            "ActionName": "Go_home"
         }
     ]
 
