@@ -106,7 +106,23 @@ The system works directly with the Python function - no server needed!
   "success": true,
   "detected_objects": ["Paper", "Banana"],
   "spatial_relationships": "### VLM Spatial Analysis:\n...",
-  "action_plan": "plan: (Paper, (38, 64, 50), MovetoObject) -> (Paper, (38, 64, 50), PickupObject)",
+  "action_plan": [
+    {
+      "object": "Paper",
+      "object_center_location": {"x": 38, "y": 64, "z": 50},
+      "ActionName": "robot_pickUp"
+    },
+    {
+      "object": "Paper",
+      "object_center_location": {"x": 38, "y": 64, "z": 50},
+      "ActionName": "robot_dropOff"
+    },
+    {
+      "object": "none",
+      "object_center_location": {"x": 0, "y": 0, "z": 0},
+      "ActionName": "Go_home"
+    }
+  ],
   "object_coordinates": {
     "Paper": [38, 64, 50],
     "Banana": [35, 45, 18]
@@ -129,44 +145,105 @@ The LLM generates the action plan by:
 1. Understanding the user's natural language command
 2. Analyzing VLM spatial relationships (e.g., which objects block others)
 3. Using the **actual coordinates** from JSON
-4. Generating action sequence: `(Object, (x, y, z), Action) -> ...`
+4. Generating action sequence as JSON list: `[{"object": "name", "object_center_location": {"x": x, "y": y, "z": z}, "ActionName": "action"}, ...]`
 
 **That's it!** Just 2 steps: VLM analyzes → LLM plans with coordinates.
 
 ## Action Plan Format
 
-Actions follow this format:
-```
-plan: (ObjectName, (x, y, z), ActionName) -> (ObjectName, (x, y, z), ActionName) -> ...
+Actions are returned as a JSON list of dictionaries:
+```json
+[
+  {
+    "object": "ObjectName",
+    "object_center_location": {"x": x, "y": y, "z": z},
+    "ActionName": "ActionName"
+  },
+  ...
+]
 ```
 
 ### Available Actions
 
 | Action | Description |
 |--------|-------------|
-| `MovetoObject` | Move robot to the object's location |
-| `PickupObject` | Pick up the object with gripper |
-| `PutDownObject` | Put down the object at current location |
-| `OpenGripper` | Open the robot gripper |
-| `CloseGripper` | Close the robot gripper |
-| `Home` | Return robot to home position |
+| `robot_pickUp` | Robot moves to point (hovering directly above the object), then descends to pick it up using the vacuum gripper |
+| `robot_dropOff` | Robot moves to a predefined drop-off location and releases the object held by the vacuum gripper |
+| `Go_home` | Moves the robot to a predefined home position using joint motion |
 
 ### Example Plans
 
 **Simple pickup:**
-```
-plan: (Paper, (38, 64, 50), MovetoObject) -> (Paper, (38, 64, 50), PickupObject)
+```json
+[
+  {
+    "object": "Paper",
+    "object_center_location": {"x": 38, "y": 64, "z": 50},
+    "ActionName": "robot_pickUp"
+  },
+  {
+    "object": "Paper",
+    "object_center_location": {"x": 38, "y": 64, "z": 50},
+    "ActionName": "robot_dropOff"
+  },
+  {
+    "object": "none",
+    "object_center_location": {"x": 0, "y": 0, "z": 0},
+    "ActionName": "Go_home"
+  }
+]
 ```
 
 **Pick and place:**
-```
-plan: (Pen, (15, 20, 30), MovetoObject) -> (Pen, (15, 20, 30), PickupObject) -> (USB Drive, (25, 25, 15), MovetoObject) -> (Pen, (25, 25, 15), PutDownObject)
+```json
+[
+  {
+    "object": "Pen",
+    "object_center_location": {"x": 15, "y": 20, "z": 30},
+    "ActionName": "robot_pickUp"
+  },
+  {
+    "object": "Pen",
+    "object_center_location": {"x": 25, "y": 25, "z": 15},
+    "ActionName": "robot_dropOff"
+  },
+  {
+    "object": "none",
+    "object_center_location": {"x": 0, "y": 0, "z": 0},
+    "ActionName": "Go_home"
+  }
+]
 ```
 
 **Handling blocked objects:**
-```
-# If Pen is on top of USB Drive, and user wants USB Drive:
-plan: (Pen, (15, 20, 30), MovetoObject) -> (Pen, (15, 20, 30), PickupObject) -> (Pen, (50, 50, 10), PutDownObject) -> (USB Drive, (15, 20, 10), MovetoObject) -> (USB Drive, (15, 20, 10), PickupObject)
+```json
+[
+  {
+    "object": "USB Drive",
+    "object_center_location": {"x": 15, "y": 20, "z": 30},
+    "ActionName": "robot_pickUp"
+  },
+  {
+    "object": "USB Drive",
+    "object_center_location": {"x": 50, "y": 50, "z": 10},
+    "ActionName": "robot_dropOff"
+  },
+  {
+    "object": "Pen",
+    "object_center_location": {"x": 15, "y": 20, "z": 10},
+    "ActionName": "robot_pickUp"
+  },
+  {
+    "object": "Pen",
+    "object_center_location": {"x": 55, "y": 55, "z": 10},
+    "ActionName": "robot_dropOff"
+  },
+  {
+    "object": "none",
+    "object_center_location": {"x": 0, "y": 0, "z": 0},
+    "ActionName": "Go_home"
+  }
+]
 ```
 
 ## Project Structure
@@ -234,7 +311,26 @@ print(result['action_plan'])
   ]
 }
 ```
-**Result:** `plan: (Paper, (38, 64, 50), MovetoObject) -> (Paper, (38, 64, 50), PickupObject)`
+**Result:** 
+```json
+[
+  {
+    "object": "Paper",
+    "object_center_location": {"x": 38, "y": 64, "z": 50},
+    "ActionName": "robot_pickUp"
+  },
+  {
+    "object": "Paper",
+    "object_center_location": {"x": 38, "y": 64, "z": 50},
+    "ActionName": "robot_dropOff"
+  },
+  {
+    "object": "none",
+    "object_center_location": {"x": 0, "y": 0, "z": 0},
+    "ActionName": "Go_home"
+  }
+]
+```
 
 ### Scenario 2: Pick and Place
 ```json
@@ -247,7 +343,26 @@ print(result['action_plan'])
   ]
 }
 ```
-**Result:** Full pick-place-navigate-drop sequence with actual coordinates
+**Result:** Full pick-place-drop sequence with actual coordinates:
+```json
+[
+  {
+    "object": "Pen",
+    "object_center_location": {"x": 15, "y": 20, "z": 30},
+    "ActionName": "robot_pickUp"
+  },
+  {
+    "object": "Pen",
+    "object_center_location": {"x": 25, "y": 25, "z": 15},
+    "ActionName": "robot_dropOff"
+  },
+  {
+    "object": "none",
+    "object_center_location": {"x": 0, "y": 0, "z": 0},
+    "ActionName": "Go_home"
+  }
+]
+```
 
 ### Scenario 3: Blocked Object (VLM detects pen on top of USB drive)
 ```json
@@ -260,7 +375,36 @@ print(result['action_plan'])
   ]
 }
 ```
-**Result:** System moves pen first, then picks up USB drive (intelligent blocking detection)
+**Result:** System moves pen first, then picks up USB drive (intelligent blocking detection):
+```json
+[
+  {
+    "object": "Pen",
+    "object_center_location": {"x": 15, "y": 20, "z": 30},
+    "ActionName": "robot_pickUp"
+  },
+  {
+    "object": "Pen",
+    "object_center_location": {"x": 50, "y": 50, "z": 10},
+    "ActionName": "robot_dropOff"
+  },
+  {
+    "object": "USB Drive",
+    "object_center_location": {"x": 15, "y": 20, "z": 10},
+    "ActionName": "robot_pickUp"
+  },
+  {
+    "object": "USB Drive",
+    "object_center_location": {"x": 55, "y": 55, "z": 10},
+    "ActionName": "robot_dropOff"
+  },
+  {
+    "object": "none",
+    "object_center_location": {"x": 0, "y": 0, "z": 0},
+    "ActionName": "Go_home"
+  }
+]
+```
 
 ## Why This Design?
 
